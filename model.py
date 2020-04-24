@@ -1,16 +1,18 @@
+#coding:utf-8
 from utils import (
   read_data, 
   input_setup, 
   imsave,
   merge
 )
-
+import matplotlib.pyplot as plt
 import time
 import os
 import matplotlib.pyplot as plt
-
+import scipy.ndimage
 import numpy as np
 import tensorflow as tf
+import cv2
 
 try:
   xrange
@@ -64,16 +66,16 @@ class SRCNN(object):
 
   def train(self, config):
     if config.is_train:
-      input_setup(self.sess, config)
+      input_setup(self.sess, config)#读取图像并制作训练对，存储为.h5文件
     else:
-      nx, ny = input_setup(self.sess, config)
+      nx, ny = input_setup(self.sess, config)#读取图像，放大并减去多余边
 
     if config.is_train:     
-      data_dir = os.path.join('./{}'.format(config.checkpoint_dir), "train.h5")
+      data_dir = os.path.join('./{}'.format(config.checkpoint_dir), "train.h5")#读取训练数据文件路径
     else:
       data_dir = os.path.join('./{}'.format(config.checkpoint_dir), "test.h5")
 
-    train_data, train_label = read_data(data_dir)
+    train_data, train_label = read_data(data_dir)#读取训练数据
 
     # Stochastic gradient descent with the standard backpropagation
     self.train_op = tf.train.GradientDescentOptimizer(config.learning_rate).minimize(self.loss)
@@ -108,15 +110,18 @@ class SRCNN(object):
           if counter % 500 == 0:
             self.save(config.checkpoint_dir, counter)
 
+    #注意这个是测试过程，如果真实使用，应该用label（原图）进行计算（已更正）
     else:
       print("Testing...")
 
-      result = self.pred.eval({self.images: train_data, self.labels: train_label})
+      # result = self.pred.eval({self.images: train_data, self.labels: train_label})#源代码
+      result = self.pred.eval({self.images: train_data})
 
       result = merge(result, [nx, ny])
       result = result.squeeze()
-      image_path = os.path.join(os.getcwd(), config.sample_dir)
-      image_path = os.path.join(image_path, "test_image.png")
+      # result = scipy.ndimage.interpolation.zoom(result, (2/1.), prefilter=False)
+      image_path = os.path.join(os.getcwd(), config.sample_dir)#以下为存储结果图片
+      image_path = os.path.join(image_path, "output"+str(config.image_index)+".png")
       imsave(result, image_path)
 
   def model(self):

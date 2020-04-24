@@ -1,17 +1,20 @@
+#coding:utf-8
 """
 Scipy version > 0.18 is needed, due to 'mode' option from scipy.misc.imread function
 """
-
 import os
 import glob
 import h5py
 import random
 import matplotlib.pyplot as plt
+import cv2
 
 from PIL import Image  # for loading images as YCbCr format
 import scipy.misc
 import scipy.ndimage
 import numpy as np
+
+import matplotlib.pyplot as plt
 
 import tensorflow as tf
 
@@ -48,17 +51,39 @@ def preprocess(path, scale=3):
     input_: image applied bicubic interpolation (low-resolution)
     label_: image with original resolution (high-resolution)
   """
-  image = imread(path, is_grayscale=True)
-  label_ = modcrop(image, scale)
+  label_ = imread(path, is_grayscale=True)#原图，groundtruth
+  image = modcrop(label_, scale)#减去不能整处的余数（去右、下边），训练图
 
-  # Must be normalized
+  # Must be normalized 归一化到（0,1）
   image = image / 255.
   label_ = label_ / 255.
 
-  input_ = scipy.ndimage.interpolation.zoom(label_, (1./scale), prefilter=False)
+  input_ = scipy.ndimage.interpolation.zoom(image, (1./scale), prefilter=False)
   input_ = scipy.ndimage.interpolation.zoom(input_, (scale/1.), prefilter=False)
 
   return input_, label_
+
+def preprocess_test(path, scale=3):
+    """
+    将原图利用双三次插值放大，再减去padding
+    """
+    label_ = imread(path, is_grayscale=True)#读取原图
+    # label_2 = scipy.misc.imread(path, flatten=True).astype(np.float)#32->64bit
+    # scipy.misc.imshow(label_)
+    # scipy.misc.imshow(label_2)
+
+    input_ = modcrop(label_, scale)#减去不能整处的余数（去右、下边），训练图
+
+    # Must be normalized 归一化到（0,1）
+    input_ = input_ / 255.
+    # input_ = input_ *0.6 +0.4
+    input2 = scipy.ndimage.interpolation.zoom(input_, (2./1), prefilter=False)
+    # imsave(input2,"./sample/before.png")
+    # input_2 = scipy.ndimage.interpolation.zoom(input_, (1./scale), prefilter=False)
+    # input_ = scipy.ndimage.interpolation.zoom(input_2, (scale/1.), prefilter=False)
+
+
+    return input_
 
 def prepare_data(sess, dataset):
   """
@@ -70,10 +95,16 @@ def prepare_data(sess, dataset):
   if FLAGS.is_train:
     filenames = os.listdir(dataset)
     data_dir = os.path.join(os.getcwd(), dataset)
-    data = glob.glob(os.path.join(data_dir, "*.bmp"))
+    # data = glob.glob(os.path.join(data_dir, "*.bmp"))
+    data = glob.glob(os.path.join(data_dir, "*.png"))
+
   else:
-    data_dir = os.path.join(os.sep, (os.path.join(os.getcwd(), dataset)), "Set5")
-    data = glob.glob(os.path.join(data_dir, "*.bmp"))
+    # data_dir = os.path.join(os.sep, (os.path.join(os.getcwd(), dataset)), "Set5")
+    data_dir = FLAGS.test_dir
+
+    # data = glob.glob(os.path.join(data_dir, "*.bmp"))
+    data = glob.glob(os.path.join(data_dir, "*.png"))#fine-turned
+
 
   return data
 
@@ -83,13 +114,15 @@ def make_data(sess, data, label):
   Depending on 'is_train' (flag value), savepath would be changed.
   """
   if FLAGS.is_train:
-    savepath = os.path.join(os.getcwd(), 'checkpoint/train.h5')
+    savepath = os.path.join(os.getcwd(), FLAGS.checkpoint_dir+'/train.h5')
   else:
-    savepath = os.path.join(os.getcwd(), 'checkpoint/test.h5')
-
+    savepath = os.path.join(os.getcwd(), FLAGS.checkpoint_dir+'/test.h5') 
+     
   with h5py.File(savepath, 'w') as hf:
-    hf.create_dataset('data', data=data)
-    hf.create_dataset('label', data=label)
+      hf.create_dataset('data', data=data)
+      hf.create_dataset('label', data=label)
+
+  
 
 def imread(path, is_grayscale=True):
   """
@@ -97,7 +130,7 @@ def imread(path, is_grayscale=True):
   Default value is gray-scale, and image is read by YCbCr format as the paper said.
   """
   if is_grayscale:
-    return scipy.misc.imread(path, flatten=True, mode='YCbCr').astype(np.float)
+    return scipy.misc.imread(path, flatten=True, mode='YCbCr').astype(np.float)#32->64bit
   else:
     return scipy.misc.imread(path, mode='YCbCr').astype(np.float)
 
@@ -127,23 +160,24 @@ def input_setup(sess, config):
   """
   # Load data path
   if config.is_train:
-    data = prepare_data(sess, dataset="Train")
+    data = prepare_data(sess, dataset="ori")#读取所有文件路径，dataset为文件夹名
   else:
     data = prepare_data(sess, dataset="Test")
 
-  sub_input_sequence = []
-  sub_label_sequence = []
+  sub_input_sequence = []#存储训练用小patch
+  sub_label_sequence = []#存储groundtruth小patch
   padding = abs(config.image_size - config.label_size) / 2 # 6
 
   if config.is_train:
     for i in xrange(len(data)):
-      input_, label_ = preprocess(data[i], config.scale)
+      input_, label_ = preprocess(data[i], config.scale)#生成训练图和groundtruth
 
       if len(input_.shape) == 3:
         h, w, _ = input_.shape
       else:
         h, w = input_.shape
 
+      #切成小块，存于sub_*_sequence中
       for x in range(0, h-config.image_size+1, config.stride):
         for y in range(0, w-config.image_size+1, config.stride):
           sub_input = input_[x:x+config.image_size, y:y+config.image_size] # [33 x 33]
@@ -157,7 +191,10 @@ def input_setup(sess, config):
           sub_label_sequence.append(sub_label)
 
   else:
-    input_, label_ = preprocess(data[2], config.scale)
+    print(config.image_index)
+    input_= preprocess_test(data[config.image_index], config.scale)
+    # input_, label_= preprocess(data[0], config.scale)
+
 
     if len(input_.shape) == 3:
       h, w, _ = input_.shape
@@ -171,13 +208,13 @@ def input_setup(sess, config):
       for y in range(0, w-config.image_size+1, config.stride):
         ny += 1
         sub_input = input_[x:x+config.image_size, y:y+config.image_size] # [33 x 33]
-        sub_label = label_[x+int(padding):x+int(padding)+config.label_size, y+int(padding):y+int(padding)+config.label_size] # [21 x 21]
+        # sub_label = label_[x+int(padding):x+int(padding)+config.label_size, y+int(padding):y+int(padding)+config.label_size] # [21 x 21]
         
         sub_input = sub_input.reshape([config.image_size, config.image_size, 1])  
-        sub_label = sub_label.reshape([config.label_size, config.label_size, 1])
+        # sub_label = sub_label.reshape([config.label_size, config.label_size, 1])
 
         sub_input_sequence.append(sub_input)
-        sub_label_sequence.append(sub_label)
+        # sub_label_sequence.append(sub_label)
 
   """
   len(sub_input_sequence) : the number of sub_input (33 x 33 x ch) in one image
@@ -187,13 +224,14 @@ def input_setup(sess, config):
   arrdata = np.asarray(sub_input_sequence) # [?, 33, 33, 1]
   arrlabel = np.asarray(sub_label_sequence) # [?, 21, 21, 1]
 
-  make_data(sess, arrdata, arrlabel)
+  make_data(sess, arrdata, arrlabel)#存储训练对，生成.h5文件
 
   if not config.is_train:
     return nx, ny
     
 def imsave(image, path):
-  return scipy.misc.imsave(path, image)
+  # return scipy.misc.imsave(path, image)
+  return cv2.imwrite(path,image*255.)
 
 def merge(images, size):
   h, w = images.shape[1], images.shape[2]
